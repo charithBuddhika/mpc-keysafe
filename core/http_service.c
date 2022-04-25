@@ -1,14 +1,71 @@
 #include "fio_cli.h"
 #include "main.h"
 #include "fio_tls.h"
+#include <stdio.h>
+#include <string.h>
 
-/* TODO: edit this function to handle HTTP data and answer Websocket requests.*/
+#define MAX_STRING_LEN 250
+
 static void on_http_request(http_s *h) {
-  /* set a response and send it (finnish vs. destroy). */
-  // printf("Test Print: %s \n", h->method);
   FIOBJ r = http_req2str(h);
-  fprintf(stderr, "%s\n", fiobj_obj2cstr(r).data);
-  http_send_body(h, "blob=123456789", 14);
+  int blob_offset = 5;
+  size_t blob_str_len;
+  char* post_data;
+  char* blob_str;
+  char* blob_encoded;
+  char* blob_final = NULL;
+
+  post_data = malloc(strlen(fiobj_obj2cstr(r).data));
+  post_data = fiobj_obj2cstr(r).data;
+
+  fprintf(stderr, "%s\n", post_data);
+
+  //extract the blob
+  printf("Extracting Blob..\n");
+  blob_str = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
+  blob_str = strstr(post_data, "Blob=") + blob_offset;
+  blob_str_len = strlen(blob_str);
+
+  //base64 decode
+  printf("Base64 Decoding..\n");
+  fio_base64_decode(NULL,blob_str,blob_str_len);
+  printf("Base64 Decoding.. DONE\n");
+  fprintf(stderr, "%s\n", blob_str); // Decoded String
+
+  //Fetching the action
+  printf("Fetching the Action..\n");
+  blob_encoded = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
+  blob_final = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
+  strcat(blob_final,"Blob=");
+ 
+  if(blob_str_len != 0)
+  {
+    if(strstr(post_data, "Action=seal") != NULL)
+    {
+      printf("Action = Seal..\n");
+      //blob_str = SealFun(blob_str) // Encryption with AES256
+    }
+    else if(strstr(post_data, "Action=unseal") != NULL)
+    {
+      printf("Action = Unseal..\n");
+      //blob_str = UnsealFun(blob_str) // Decryption with AES256
+    }
+    printf("Base64 Encoding..\n");
+    fio_base64_encode(blob_encoded,blob_str,strlen(blob_str));
+    strcat(blob_final,blob_encoded);
+    printf("Base64 Encoding.. DONE\n");
+    fprintf(stderr, "%s\n", blob_final); 
+    http_send_body(h, blob_final, strlen(blob_final));
+  }
+  else{
+    char* rq_err = "Empty Blob";
+    http_send_body(h, rq_err, strlen(rq_err));
+  }
+
+  free(post_data);
+  free(blob_str);
+  free(blob_encoded);
+  free(blob_final);
 }
 
 /* starts a listeninng socket for HTTP connections. */
@@ -16,11 +73,10 @@ void initialize_http_service(void) {
   fio_tls_s *tls = NULL;
   if (fio_cli_get_bool("-tls")) {
   char local_addr[1024];
-  char* public_key = {"-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAugDaVqkspCvi0kCo0dLYS6CgdL4WZEwoRbbwXCgyk8cNYcYOFIwYOWGbOBWsAsRHC2Z226OlniNOd/YOUmtTx6JL56UQaK6NRc0jOp2yucX8i99miTryijbV0LCya2+XZblKXJVX+mJ9nMkAG9VJGYrM3gmRT4g6s+aJdTnTZZRIKzVvP/i+k2F3zV7mVgtBPbPzaB2tM8Ovzf/1pi8OYIn1K1Lt9y51SGPG5aU8WgDdAuLYmYRLGnJkzgLhUxZJmEQGu0a2e+omGKQlSRos+8aOpXReKv6hbar9HzGLOzmtqDUVAhAUTmP5EfLYPRg7Z+LWZolcszuLFQaS7bLA/wIDAQAB-----END PUBLIC KEY-----"};
-  char* private_key = {"-----BEGIN RSA PRIVATE KEY-----Proc-Type: 4,ENCRYPTEDDEK-Info: DES-EDE3-CBC,8025560CA986824C 27QFyUMSmtDMvg5zKjtoMmGw1SibgU/mnBfTxZWL31lrCoFC1c6XOT7Y9+gOa3zPIVP5wIQsKjLkM7q3HDF/zGnfCZhCV/Pk868WggdmDnboJLn6XfjxeNVLSfO/WQTFSgapmOm82GAXHMLOZxuo7wi6Oe7F3FJCzOQU9FpHCPLLLIsXMzzSbHgbi3FAeL+rCIJ2bUj4jDTVsdNRmqyWdKwvLUmI1/+BIVkiPM6lvUEUyqR+ewflOcdDO/nSX18RIQctILnWIUaDrlGZ7Hg15Yqu8tMWpotwt49Xbheknv2nU+p4cbMl3W0MLm7JtsuW+1O12mQngEap9wTsCGhEDrLFCboJFqFRbS0E5/rb1bQdH6mrpp6Yf8b/Q8zneHL00WI7geEP5bLbCOWzvDZ9DQzDUW9r0K9wz6oALfGxKdV1DoiuZ8wtI0gH4YVE/mDpkM+11JMHogqGZsFWC2vcS/MYf6h+tCCl6EFVixjBCdGrS7/YDd/zuBTkdSoIU3UeC2de7ga/P7p+hfPyPTFCobkNalcP1CjZQtwo3haf3eISbkHgx24BA/Hu1oGRcOwFvg/8VVpEH/hcCzG6Xr6lIJ77AL/2QLqcN8mxm9/1LbLRBndXlJHzwduLligkjHFPMvyCzk7QybCeQLlEa8jWqkLoJBxXLD0BX2B3iolgza/55W3YZs6jpT4QGmsn+o6x/rVOEqQWX5FlyLrP/ilGjBvOrv+8J131nmQ2uWPPCkLVK+re2NSod04eUQqJ8pjwTDvQ5eD2t8jLfvdbO4Pz0q7GA5k97JANR6fyAUJy1Cl/Uz4WJeUrS6HD6WiNmzda1h7czCz6ual/O+fkf1nuviZG1RSzSL+9biVVzluvoaVOaqQ2e1oOzC9fM9Ooqqp1UQgFDiVolrpUIYO/LbQc5/OHCSQgrkBm6uMhSv4vHZjxz/skPM30omq8KCle7qLFqqom2slFI12i91q0QPI1PJ78jFd+t7M/iXXg37mu0qRBZWzBddh8K6PIqQNQ7pZT/uFOWPq7zAs6jO5yj1zXxuEtwtarZQiHra4P4zx4M6iR6TrJj55p4/fcdqIpEkdEK4nrEBKcyrDmUPKEZ82rQZolfIiUv9IuTCHrfDXLN0UNDJpzJP+BNpZRN5E+TiYxeGXbWfeVJYeJATEm9mDeWDDgVGa6gqwY87wBIa9etLRocR5Ka5vNBwdQeKvl+hLLAkIi3Nj8OTQlQmccT7hBdkXLjnjjT5W0faPHvY76udaSq1+LcSvfrw5BE7+sxTMsePY1LkzM7RmGeo/lfbz+t/7mTVFZ2WiGkwXIQlW3D+avGAVhaRmHPQPlhw5vVaTzmnlrnzRT1WHQo+k6EGVUQQGlV5F4w/0DUUV6TestBg13VfuWubw3MmFAWNSNIKzA3e11MNuchzx+YCKUE8w9ctQYDnQaebB1Ktcggqipes07THeik9Fkn9rlL0TBKpR67fKM/aMI2eM1IzReGE65oAsCyw9ClK70Ii0JcQ57Q5VwaDd7+/TIM2CBwPk357TrxZatCCXzn2zJyOaPmHx9knepKaZsyUw5TetkSRwmtZRYdbudtouGokcUOhhtZ7NQ-----END RSA PRIVATE KEY-----"};
   local_addr[fio_local_addr(local_addr, 1023)] = 0;
-  tls = fio_tls_new(local_addr, public_key, private_key, NULL);
+  tls = fio_tls_new(local_addr, NULL, NULL, NULL);
   }
+
   /* listen for inncoming connections */
   if (http_listen(fio_cli_get("-p"), fio_cli_get("-b"),
                   .on_request = on_http_request,
