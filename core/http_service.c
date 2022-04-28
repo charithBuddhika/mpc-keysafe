@@ -6,70 +6,50 @@
 
 #define MAX_STRING_LEN 250
 
-static void on_http_request(http_s *h) {
-  FIOBJ r = http_req2str(h);
-  int blob_offset = 5;
-  size_t blob_str_len;
-  char* post_data;
-  char* blob_str;
-  char* blob_encoded;
-  char* blob_final = NULL;
+/* cleanup any leftovers */
+static void cleanup(void);
 
-  post_data = malloc(strlen(fiobj_obj2cstr(r).data));
-  post_data = fiobj_obj2cstr(r).data;
+/* reusable objects */
+static FIOBJ HTTP_HEADER_SERVER;
+static FIOBJ HTTP_VALUE_SERVER;
 
-  fprintf(stderr, "%s\n", post_data);
 
-  //extract the blob
-  printf("Extracting Blob..\n");
-  blob_str = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
-  blob_str = strstr(post_data, "Blob=") + blob_offset;
-  blob_str_len = strlen(blob_str);
+/* *****************************************************************************
+Routing
+***************************************************************************** */
 
-  //base64 decode
-  printf("Base64 Decoding..\n");
-  fio_base64_decode(NULL,blob_str,blob_str_len);
-  printf("Base64 Decoding.. DONE\n");
-  fprintf(stderr, "%s\n", blob_str); // Decoded String
+/* adds a route to our simple router */
+static void route_add(char *path, void (*handler)(http_s *));
 
-  //Fetching the action
-  printf("Fetching the Action..\n");
-  blob_encoded = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
-  blob_final = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
-  strcat(blob_final,"Blob=");
- 
-  if(blob_str_len != 0)
-  {
-    if(strstr(post_data, "Action=seal") != NULL)
-    {
-      printf("Action = Seal..\n");
-      //blob_str = SealFun(blob_str) // Encryption with AES256
-    }
-    else if(strstr(post_data, "Action=unseal") != NULL)
-    {
-      printf("Action = Unseal..\n");
-      //blob_str = UnsealFun(blob_str) // Decryption with AES256
-    }
-    printf("Base64 Encoding..\n");
-    fio_base64_encode(blob_encoded,blob_str,strlen(blob_str));
-    strcat(blob_final,blob_encoded);
-    printf("Base64 Encoding.. DONE\n");
-    fprintf(stderr, "%s\n", blob_final); 
-    http_send_body(h, blob_final, strlen(blob_final));
-  }
-  else{
-    char* rq_err = "Empty Blob";
-    http_send_body(h, rq_err, strlen(rq_err));
-  }
+/* routes a request to the correct handler */
+static void route_perform(http_s *);
 
-  free(post_data);
-  free(blob_str);
-  free(blob_encoded);
-  free(blob_final);
-}
+/* cleanup for our router */
+static void route_clear(void);
+
+/* *****************************************************************************
+Request handlers
+***************************************************************************** */
+
+/* handles operational requests */
+static void on_request_op(http_s *h);
+
+/* handles key requests */
+static void on_request_key(http_s *h);
+
 
 /* starts a listeninng socket for HTTP connections. */
 void initialize_http_service(void) {
+
+  /* sertup routes */
+  route_add("/op", on_request_op);
+  route_add("/key", on_request_key);
+
+  /* Server name and header */
+  HTTP_HEADER_SERVER = fiobj_str_new("server", 6);
+  HTTP_VALUE_SERVER = fiobj_str_new("mcp-keysafe " FIO_VERSION_STRING,
+                                    strlen("mcp-keysafe " FIO_VERSION_STRING));
+
   fio_tls_s *tls = NULL;
   if (fio_cli_get_bool("-tls")) {
   char local_addr[1024];
@@ -79,7 +59,7 @@ void initialize_http_service(void) {
 
   /* listen for inncoming connections */
   if (http_listen(fio_cli_get("-p"), fio_cli_get("-b"),
-                  .on_request = on_http_request,
+                  .on_request = route_perform,
                   .max_body_size = fio_cli_get_i("-maxbd") * 1024 * 1024,
                   .ws_max_msg_size = fio_cli_get_i("-max-msg") * 1024,
                   // .public_folder = "/home/charith/Desktop/Fraction/HAAS/project_temp/src/www/",
@@ -93,4 +73,141 @@ void initialize_http_service(void) {
 
   fio_start(.threads = fio_cli_get_i("-t"), .workers = fio_cli_get_i("-w"));
   fio_tls_destroy(tls);
+}
+
+
+/* *****************************************************************************
+Request handlers
+***************************************************************************** */
+
+/* handles operational requests */
+static void on_request_op(http_s *h) {
+  http_parse_body(h);
+  fio_str_info_s req = fiobj_obj2cstr(h->body);
+  fprintf(stderr, "%s\n", req.data);
+
+  // Parsing the JSON
+  FIOBJ data_obj = FIOBJ_INVALID;
+  size_t consumed = fiobj_json2obj(&data_obj, req.data, req.len);
+  if (!consumed || !data_obj) {
+    printf("\nERROR, couldn't parse data.\n");
+    exit(-1);
+  }
+
+  FIOBJ key_action = fiobj_str_new("Action", 6);
+  FIOBJ key_blob = fiobj_str_new("Blob", 4);
+  fio_str_info_s action;
+  fio_str_info_s blob;
+  char* blob_encoded;
+  if (FIOBJ_TYPE_IS(data_obj, FIOBJ_T_HASH) && fiobj_hash_get(data_obj, key_action)) {   
+    action.data = fiobj_obj2cstr(fiobj_hash_get(data_obj, key_action)).data;
+  }
+  else{
+    printf("\nERROR, Action Key Couldn't Find.\n");
+    http_send_body(h, "Action Key Couldn't Find.", 25);
+  }
+
+  if (FIOBJ_TYPE_IS(data_obj, FIOBJ_T_HASH) && fiobj_hash_get(data_obj, key_blob)) {   
+    blob.data = fiobj_obj2cstr(fiobj_hash_get(data_obj, key_blob)).data;
+    //base64 decoding
+    printf("%s\n",blob.data);
+    fio_base64_decode(NULL,blob.data,strlen(blob.data));
+    printf("%s\n",blob.data);
+    if(action.data[0] == 's')
+    {
+      //TODO:blob AES256 encryption
+      printf("blob AES256 encryption\n");
+    }
+    else if(action.data[0] == 'u')
+    {
+      //TODO:blob AES256 decryption
+      printf("blob AES256 decryption\n");
+    }
+    //base64 encoding
+    blob_encoded = malloc(sizeof(uint8_t) * MAX_STRING_LEN);
+    fio_base64_encode(blob_encoded,blob.data,strlen(blob.data));
+    printf("%s\n",blob_encoded);
+
+    http_set_header(h, HTTP_HEADER_CONTENT_TYPE, http_mimetype_find("json", 4));
+    FIOBJ json;
+    FIOBJ hash = fiobj_hash_new2(1);
+    FIOBJ REQ_BLOB = fiobj_str_new("Blob", 4);
+    FIOBJ REQ_BLOB_VAL = fiobj_str_new(blob_encoded, strlen(blob_encoded));
+    fiobj_hash_set(hash, REQ_BLOB, fiobj_dup(REQ_BLOB_VAL));
+    json = fiobj_obj2json(hash, 0);
+    fio_str_info_s tmp = fiobj_obj2cstr(json);
+    http_send_body(h, tmp.data, tmp.len);
+    fiobj_free(hash);
+    fiobj_free(json);
+    fiobj_free(REQ_BLOB);
+    fiobj_free(REQ_BLOB_VAL);
+
+  }
+  else{
+    printf("\nERROR, Blob Key Couldn't Find.\n");
+    http_send_body(h, "Blob Key Couldn't Find.", 23);
+  }
+  fiobj_free(key_action);
+  fiobj_free(key_blob);
+  fiobj_free(data_obj);
+  free(blob_encoded);
+}
+
+/* handles key requests */
+static void on_request_key(http_s *h) {
+  http_send_body(h, "on_request_key", 14);
+}
+
+/* *****************************************************************************
+Routing
+***************************************************************************** */
+
+typedef void (*fio_router_handler_fn)(http_s *);
+#define FIO_SET_NAME fio_router
+#define FIO_SET_OBJ_TYPE fio_router_handler_fn
+#define FIO_SET_KEY_TYPE fio_str_s
+#define FIO_SET_KEY_COPY(dest, obj) fio_str_concat(&(dest), &(obj))
+#define FIO_SET_KEY_DESTROY(obj) fio_str_free(&(obj))
+#define FIO_SET_KEY_COMPARE(k1, k2) fio_str_iseq(&(k1), &k2)
+#define FIO_INCLUDE_STR
+#define FIO_STR_NO_REF
+#include <fio.h>
+/* the router is a simple hash map */
+static fio_router_s routes;
+
+/* adds a route to our simple router */
+static void route_add(char *path, void (*handler)(http_s *)) {
+  /* add handler to the hash map */
+  fio_str_s tmp = FIO_STR_INIT_STATIC(path);
+  /* fio hash maps support up to 96 full collisions, we can use len as hash */
+  fio_router_insert(&routes, fio_str_len(&tmp), tmp, handler, NULL);
+}
+
+/* routes a request to the correct handler */
+static void route_perform(http_s *h) {
+  /* add required Serevr header */
+  http_set_header(h, HTTP_HEADER_SERVER, fiobj_dup(HTTP_VALUE_SERVER));
+  /* collect path from hash map */
+  fio_str_info_s tmp_i = fiobj_obj2cstr(h->path);
+  fio_str_s tmp = FIO_STR_INIT_EXISTING(tmp_i.data, tmp_i.len, 0);
+  fio_router_handler_fn handler = fio_router_find(&routes, tmp_i.len, tmp);
+  /* forward request or send error */
+  if (handler) {
+    handler(h);
+    return;
+  }
+  http_send_error(h, 404);
+}
+
+/* cleanup for our router */
+static void route_clear(void) { fio_router_free(&routes); }
+
+
+/* cleanup any leftovers */
+static void cleanup(void) {
+  fio_cli_end();
+  fiobj_free(HTTP_HEADER_SERVER);
+  fiobj_free(HTTP_VALUE_SERVER);
+
+  route_clear();
 }
